@@ -89,8 +89,8 @@ class EnumerationWithExistingRecordsTest < Test::Unit::TestCase
     assert_raise(ActiveRecord::RecordNotFound) {Color.find(1, -1)}
   end
   
-  def test_should_ignore_finder_options
-    assert_equal @red, Color.find(:first, :conditions => {:name => 'blue'})
+  def test_should_not_ignore_finder_options
+    assert_equal @blue, Color.find(:first, :conditions => {:name => 'blue'})
   end
   
   def test_should_be_able_to_find_by_id
@@ -186,39 +186,6 @@ class EnumerationWithExistingRecordsTest < Test::Unit::TestCase
   end
 end
 
-class EnumerationWithCacheTest < Test::Unit::TestCase
-  def setup
-    @red = create_color(:id => 1, :name => 'red')
-    @green = create_color(:id => 2, :name => 'green')
-  end
-  
-  def test_should_cache_records_found_by_id
-    assert_same Color.find_by_id(1), Color.find_by_id(1)
-  end
-  
-  def test_should_cache_records_found_by_name
-    assert_same Color.find_by_name('red'), Color.find_by_name('red')
-  end
-  
-  def test_should_clear_cache_after_creating_a_new_record
-    all_colors = Color.find(:all)
-    create_color(:id => 3, :name => 'blue')
-    assert_not_same all_colors, Color.find(:all)
-    assert_equal all_colors.size + 1, Color.find(:all).size
-  end
-  
-  def test_should_clear_cache_after_destroying_an_existing_record
-    all_colors = Color.find(:all)
-    @green.destroy
-    assert_not_same all_colors, Color.find(:all)
-    assert_equal all_colors.size - 1, Color.find(:all).size
-  end
-  
-  def teardown
-    Color.destroy_all
-  end
-end
-
 class EnumerationAfterBeingCreatedTest < Test::Unit::TestCase
   def setup
     @red = create_color(:id => 1, :name => 'red')
@@ -230,10 +197,6 @@ class EnumerationAfterBeingCreatedTest < Test::Unit::TestCase
     assert !@red.new_record?
   end
   
-  def test_should_be_readonly
-    assert @red.readonly?
-  end
-  
   def test_should_have_an_id
     assert_equal 1, @red.id
   end
@@ -241,8 +204,6 @@ class EnumerationAfterBeingCreatedTest < Test::Unit::TestCase
   def test_should_not_be_allowed_to_be_updated
     @red.name = 'white'
     assert_raise(ActiveRecord::ReadOnlyRecord) {@red.save!}
-  ensure
-    @red.name = 'red'
   end
   
   def test_should_be_allowed_to_be_destroyed

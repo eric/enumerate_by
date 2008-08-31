@@ -36,10 +36,8 @@ enumeration ids are stored in the database.  This means that you would use 'red'
 everywhere in your code when referencing the 'red' enumeration identifier, but
 it would always be stored in the database with the integer value of 1.
 
-In addition, remember that your enumerations act almost exactly like regular
-ActiveRecord models.  This means that you can define validations, enumerations,
-etc.  There is limited support for advanced finder options, address by the
-acts_as_enumeration_in_memory plugin discussed later on.
+In addition, using an in-memory SQLite3 database allows for the power of
+ActiveRecord with the speed and simplicity of enumerations.
 
 == Usage
 
@@ -118,11 +116,10 @@ acts_as_enumeration_in_memory plugin discussed later on.
 
 == Future development
 
-See acts_as_enumeration_in_memory[http://github.com/pluginaweek/acts_as_enumeration_in_memory]
-for more information about the future development of this plugin in terms of
-ease of maintenance and utilization of ActiveRecord.  acts_as_enumeration_in_memory
-is an experimental re-implementation of this plugin using an in-memory SQLite3
-database.
+This branch is an experimental re-implementation using an in-memory SQLite3
+database.  It is simpler to implement and provides the power of ActiveRecord.
+However, the overhead of running a SQLite3 database is holding this branch back
+from being merged back into master.
 
 == Testing
 

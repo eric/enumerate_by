@@ -88,6 +88,8 @@ module PluginAWeek #:nodoc:
   # 
   #   Book['Blink']   # => #<Book id: 1, title: "Blink", author: "Malcolm Gladwell", num_pages: 277>
   module ActsAsEnumeration #:nodoc:
+    mattr_accessor :connection
+    
     def self.included(base) #:nodoc:
       base.class_eval do
         # Tracks which attributes represent enumerations
@@ -96,6 +98,15 @@ module PluginAWeek #:nodoc:
         
         extend PluginAWeek::ActsAsEnumeration::MacroMethods
       end
+    end
+    
+    # Stores shared db connections
+    class Enumeration < ActiveRecord::Base
+      self.connection = {
+        :adapter => 'sqlite3',
+        :database => ':memory:',
+        :verbose => 'quiet'
+      }
     end
     
     module MacroMethods
@@ -118,24 +129,33 @@ module PluginAWeek #:nodoc:
       # to ensure the presence of the default attributes and that the
       # identifier attribute is unique across all records.
       def acts_as_enumeration(attribute = :name)
-        write_inheritable_attribute :enumeration_attribute, attribute.to_s
+        attribute = attribute.to_s
+        
+        clear_active_connection_name
+        @active_connection_name = 'PluginAWeek::ActsAsEnumeration::Enumeration'
+        
+        connection.create_table(table_name) do |t|
+          t.string attribute
+        end
+        connection.add_index table_name, attribute, :unique => true
+        
+        # A list of the unique attributes defining an enumerated value
+        write_inheritable_attribute :enumeration_attribute, attribute
         class_inheritable_reader :enumeration_attribute
         
-        class_inheritable_array :columns
-        class_inheritable_array :identifiers
+        write_inheritable_attribute :enumeration_column_names, %w(id #{attribute})
+        class_inheritable_reader :enumeration_column_names
         
-        # Initialize the index cache
-        @all_by = {}
+        # A cache of the records that have been created
+        cattr_accessor :records
+        self.records = {}
+        
+        validates_presence_of   :id
+        validates_presence_of   attribute
+        validates_uniqueness_of attribute
         
         extend PluginAWeek::ActsAsEnumeration::ClassMethods
         include PluginAWeek::ActsAsEnumeration::InstanceMethods
-        
-        column :id, :integer
-        column enumeration_attribute, :string
-        
-        validates_presence_of :id
-        validates_presence_of enumeration_attribute
-        validate :identifier_is_unique
       end
       
       # Is this class an enumeration?
@@ -144,23 +164,13 @@ module PluginAWeek #:nodoc:
       end
     end
     
-    # The various types of ActiveRecord finder options aren't all supported for
-    # enumerations due to the fact that the objects are not backed by a data
-    # store.  However, some of the default finders *do* work, including:
-    # * <tt>find(:all)</tt>
-    # * <tt>find(1)</tt>
-    # * <tt>find(1, 2, 3)</tt>
-    # 
-    # In addition to these generic finders, there are also individual finders
-    # for each column. See +column+ for more information about how those are
-    # generated.
-    # 
-    # *Note* that additional finder options like <tt>:conditions</tt> and
-    # <tt>:order</tt> are not supported in enumerations. As a result, you should
-    # resort to using Ruby's Array/Enumerable interface.
     module ClassMethods
       def self.extended(base) #:nodoc:
         class << base
+          alias_method_chain :has_many, :enumerations
+          alias_method_chain :has_one, :enumerations
+          alias_method_chain :sanitize_sql_hash_for_conditions, :symbolic_enumeration_attributes
+          
           # Don't allow silent failures
           alias_method :create, :create!
         end
@@ -170,65 +180,46 @@ module PluginAWeek #:nodoc:
       # * +sql_type+ - None; any value allowed
       # * +default+ - No default
       # * +null+ - Allow null values
-      # 
-      # == Finder methods
-      # 
-      # When a new column is defined, a finder method is generated for it.  For
-      # example, if a column called +title+ is generated, then the following
-      # finder methods are generated:
-      # * <tt>find_all_by_title(value)</tt> - Finds all enumeration identifiers with the given title
-      # * <tt>find_by_title(value)</tt> - Finds the first enumeration identifier with the given title
-      # 
-      # == Caching
-      # 
-      # The results from each finder called are cached. As a result, there should
-      # be no performance hit when using them.
       def column(name, sql_type = nil, default = nil, null = true)
         # Remove any existing columns with the same name
-        columns.reject! {|column| column.name == name.to_s} if columns
+        connection.remove_column table_name, name if enumeration_column_names.any? {|column_name| column_name == name.to_s}
         
-        write_inheritable_array(:columns, [ActiveRecord::ConnectionAdapters::Column.new(name.to_s, default, sql_type.to_s, null)])
+        connection.add_column table_name, name, sql_type, :default => default, :null => null
+        enumeration_column_names << name
         
-        # Add finders
-        klass = class << self; self; end
-        klass.class_eval do
-          define_method("find_all_by_#{name}") do |value|
-            find_all_by_attribute(name, value)
-          end
+        attr_readonly name
+      end
+      
+      # Uses the cached record instead of instantiating a new one
+      def instantiate(record)
+        records[record['id']]
+      end
+      
+      # Adds support for automatically reloading has_many associations
+      def has_many_with_enumerations(association_id, options = {}, &extension)
+        has_many_without_enumerations(association_id, options, &extension)
+        enumeration_accessor_methods_with_fresh_cache(association_id)
+      end
+      
+      # Adds support for automatically reloading has_one associations
+      def has_one_with_enumerations(association_id, options = {})
+        has_one_without_enumerations(association_id, options)
+        enumeration_accessor_methods_with_fresh_cache(association_id)
+      end
+      
+      # Automatically clears association cache for non-enumerations
+      def enumeration_accessor_methods_with_fresh_cache(association_id) #:nodoc:
+        reflection = reflections[association_id.to_sym]
+        if !Object.const_defined?(reflection.class_name) || !reflection.klass.enumeration?
+          name = reflection.name
+          class_name = reflection.class_name
           
-          define_method("find_by_#{name}") do |value|
-            find_by_attribute(name, value)
+          define_method("#{name}_with_fresh_cache") do
+            value = send("#{name}_without_fresh_cache")
+            instance_variable_set("@#{name}", nil) unless reflection.klass.enumeration? # Get rid of the cached value
+            value
           end
-        end
-        
-        # Prepare index cache for this column
-        @all_by[name.to_s] = {}
-      end
-      
-      # Finds all of the values in this enumeration.  The values will be cached
-      # until the cache is reset either manually or automatically when the
-      # model chanages.
-      def find_every(options) #:nodoc:
-        @all ||= (identifiers || []).dup
-        @all.dup
-      end
-      
-      # Finds the identifier with the given id
-      def find_one(id, options) #:nodoc:
-        if result = find_by_id(id)
-          result
-        else
-          raise ActiveRecord::RecordNotFound, "Couldn't find #{name} with ID=#{id}"
-        end
-      end
-      
-      # Finds the identifiers with the given ids
-      def find_some(ids, options) #:nodoc:
-        result = ids.map {|id| find_by_id(id)}.compact
-        if result.size == ids.size
-          result
-        else
-          raise ActiveRecord::RecordNotFound, "Couldn't find all #{name.pluralize} with IDs (#{ids.join(',')})"
+          alias_method_chain name, :fresh_cache
         end
       end
       
@@ -259,38 +250,6 @@ module PluginAWeek #:nodoc:
         find_by_any(value) || raise(ActiveRecord::RecordNotFound, "Couldn't find #{name} with value #{value.inspect}")
       end
       
-      # Finds all records that have an attribute with the given value. This is
-      # the generic finder used by each attribute finder.  For example,
-      # 
-      #   find_all_by_attribute(:title, 'Blink')
-      #   find_all_by_attribute(:id, 1)
-      def find_all_by_attribute(attribute, value)
-        attribute = attribute.to_s
-        value = value.to_s if value.is_a?(Symbol) && attribute == enumeration_attribute
-        
-        if records = @all_by[attribute][value]
-          records.dup
-        else
-          []
-        end
-      end
-      
-      # Finds the first record the has an attribute with the given value. This is
-      # the generic finder used by each attribute finder.  For example,
-      # 
-      #   find_by_attribute(:title, 'Blink')
-      #   find_by_attribute(:id, 1)
-      def find_by_attribute(attribute, value)
-        find_all_by_attribute(attribute, value).first
-      end
-      
-      # Finds the record that matches the enumeration's identifer attribute for
-      # the given value. The attribute is based on what was specified when calling
-      # +acts_as_enumeration+.
-      def find_by_enumeration_attribute(value)
-        send("find_by_#{enumeration_attribute}", value)
-      end
-      
       # Finds the enumerated value indicated by the given value or returns nil
       # if nothing was found. The value can be any one of the following types:
       # * +fixnum+ - The id of the record
@@ -304,9 +263,20 @@ module PluginAWeek #:nodoc:
         end
       end
       
-      # Counts the number of enumerated values defined
-      def count(*args)
-        find(:all).size
+      # Finds the record that matches the enumeration's identifer attribute for
+      # the given value. The attribute is based on what was specified when calling
+      # +acts_as_enumeration+.
+      def find_by_enumeration_attribute(value)
+        send("find_by_#{enumeration_attribute}", value)
+      end
+      
+      # Add support for the conditions hash for conditions
+      def sanitize_sql_hash_for_conditions_with_symbolic_enumeration_attributes(attrs)
+        attrs.each do |attr, value|
+          attrs[attr] = value.to_s if value.is_a?(Symbol) && attr.to_s == enumeration_attribute
+        end
+        
+        sanitize_sql_hash_for_conditions_without_symbolic_enumeration_attributes(attrs)
       end
       
       # Is this class an enumeration?  This value is used to determine when
@@ -314,28 +284,6 @@ module PluginAWeek #:nodoc:
       # enumeration interface instead of going through ActiveRecord.
       def enumeration?
         true
-      end
-      
-      # Updates the cache based on the operation being performed. We prefer to
-      # update the cache rather than reset for performance reasons.  The valid
-      # types of operations are:
-      # * +push+ - Adds the record to the cache
-      # * +delete+ - Deletes the record from the cache
-      def update_cache(operation, record)
-        # Update the all cache
-        @all.send(operation, record) if @all
-        
-        # Update the indexes for each attribute in the record to improve
-        # performance when defining large enumerations
-        columns.each do |column|
-          value = record.send(column.name)
-          
-          if records = @all_by[column.name][value]
-            records.send(operation, record)
-          elsif operation == :push
-            @all_by[column.name][value] = [record]
-          end
-        end
       end
     end
     
@@ -374,30 +322,25 @@ module PluginAWeek #:nodoc:
       def self.included(base) #:nodoc:
         base.class_eval do
           # Disable unused ActiveRecord features
-          {:callbacks => %w(create_or_update valid?), :dirty => %w(write_attribute save save!)}.each do |feature, methods|
+          {:callbacks => %w(create_or_update create valid?), :dirty => %w(write_attribute save save! reload)}.each do |feature, methods|
             methods.each do |method|
               method, punctuation = method.sub(/([?!=])$/, ''), $1
               alias_method "#{method}#{punctuation}", "#{method}_without_#{feature}#{punctuation}"
             end
           end
+          
+          alias_method_chain :create, :cache
+          alias_method_chain :destroy, :cache
         end
       end
       
       # Enumeration values should never really be destroyed during runtime.
       # However, this is supported to complete the full circle for an record's
       # liftime in ActiveRecord
-      def destroy #:nodoc:
-        self.class.identifiers.delete(self)
+      def destroy_with_cache #:nodoc:
+        value = destroy_without_cache
         remove_from_cache
-        freeze
-      end
-      
-      # Clears the various record caches, but doesn't actually try to reload
-      # any values from the database
-      def reload(options = nil) #:nodoc:
-        clear_aggregation_cache
-        clear_association_cache
-        self
+        value
       end
       
       # Whether or not this enumeration is equal to the given value. Equality
@@ -435,33 +378,27 @@ module PluginAWeek #:nodoc:
       end
       
       private
-        def create #:nodoc:
-          self.class.write_inheritable_array(:identifiers, [self])
-          @new_record = false
+        # Creates the record, caching it for future access
+        def create_with_cache
+          value = create_without_cache
           readonly!
           add_to_cache
-          id
+          value
+        end
+        
+        # Records the record in the cache
+        def add_to_cache
+          self.class.records[id.to_s] = self
+        end
+        
+        # Removes the cached record
+        def remove_from_cache
+          self.class.records.delete(id.to_s)
         end
         
         # Allow id to be assigned via ActiveRecord::Base#attributes=
         def attributes_protected_by_default #:nodoc:
           []
-        end
-        
-        # Does this identifier have a unique enumeration value?
-        def identifier_is_unique
-          existing_record = self.class.find_by_enumeration_attribute(enumeration_value)
-          errors.add(enumeration_attribute, ActiveRecord::Errors.default_error_messages[:taken]) if existing_record && existing_record != self
-        end
-        
-        # Adds this record to the cache
-        def add_to_cache
-          self.class.update_cache(:push, self)
-        end
-        
-        # Removes this record from the cache
-        def remove_from_cache
-          self.class.update_cache(:delete, self)
         end
     end
   end

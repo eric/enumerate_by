@@ -178,7 +178,10 @@ module EnumerateBy
     [:find_by_sql, :exists?, :calculate].each do |method|
       define_method(method) do |*args|
         if EnumerateBy.perform_caching && perform_enumerator_caching
-          enumerator_cache_store.fetch([method] + args) { super(*args) }
+          result = enumerator_cache_store.fetch([method] + args) { super(*args) }
+          # Call #dup on value returned from cache to undo the freezing that
+          # is done by the MemoryStore
+          result.dup rescue result
         else
           super(*args)
         end

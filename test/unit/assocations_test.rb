@@ -65,6 +65,34 @@ class ModelWithEnumerationScopesTest < ActiveRecord::TestCase
   end
 end
 
+class ModelWithHasManyTestWithCaching < ActiveRecord::TestCase
+  def setup
+    EnumerateBy.perform_caching = true
+
+    @red = create_color(:name => 'red')
+    @blue = create_color(:name => 'blue')
+    @red_car = create_car(:name => 'Ford Mustang', :color => @red)
+    @blue_car = create_car(:name => 'Ford Mustang', :color => @blue)
+  end
+
+  def teardown
+    EnumerateBy.perform_caching = false
+  end
+
+  def test_should_find_has_many_records
+    assert_equal [@red_car], Color['red'].cars
+  end
+
+  def test_should_find_changed_has_many_records
+    assert_equal [@red_car], Color['red'].cars
+
+    Car.delete_all
+    @red_honda = create_car(:name => 'Honda Accord', :color => @red)
+
+    assert_equal [@red_honda], Color['red'].cars
+  end
+end
+
 class ModelWithPolymorphicBelongsToAssociationTest < ActiveRecord::TestCase
   def test_should_not_create_named_scopes
     assert !Car.respond_to?(:with_feature)

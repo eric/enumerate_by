@@ -39,9 +39,9 @@ module ActsAsEnumeration
       end
       
       # Sanitizes a hash of attribute/value pairs into SQL conditions for a WHERE clause.
-      def sanitize_sql_hash_for_conditions_with_enumerations(attrs)
+      def sanitize_sql_hash_for_conditions_with_enumerations(attrs, default_table_name = quoted_table_name)
         replace_enumeration_values_in_hash(attrs)
-        sanitize_sql_hash_for_conditions_without_enumerations(attrs)
+        sanitize_sql_hash_for_conditions_without_enumerations(attrs, default_table_name)
       end
       
       # Sanitizes a hash of attribute/value pairs into SQL conditions for a SET clause.
